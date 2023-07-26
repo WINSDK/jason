@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+///! Crate for parsing json.
 
 use std::fmt;
 
@@ -6,7 +7,8 @@ mod tests;
 
 const MAX_DEPTH: usize = 256;
 
-struct Error {
+/// Error with line number and context. 
+pub struct Error {
     offset: usize,
     msg: String,
 }
@@ -19,10 +21,12 @@ impl fmt::Debug for Error {
     }
 }
 
+/// Trait related to any data structure that json supports.
 trait Parsing<'src>: Sized {
     fn parse(ctx: &mut Context<'src>) -> Result<Self, Error>;
 }
 
+/// Trait for indicating that any error has to be propagated up.
 trait Failing: Sized {
     fn failing(self, ctx: &mut Context) -> Self;
 }
@@ -48,15 +52,24 @@ impl<T> Failing for Option<T> {
     }
 }
 
+/// Information required at runtime when parsing json>
 #[derive(Debug)]
 struct Context<'src> {
+    /// Reference to input string
     src: &'src str,
+
+    /// Offset into input string
     offset: usize,
+
+    /// Recursion depth
     depth: usize,
+
+    /// Indicator used by the [`Failing`] trait
     is_failing: bool,
 }
 
 impl<'src> Context<'src> {
+    /// Create's a new [`Context`] required for parsing json
     fn new(src: &'src str) -> Self {
         Self {
             src,
@@ -66,10 +79,12 @@ impl<'src> Context<'src> {
         }
     }
 
+    /// Where we are in the string.
     fn src(&self) -> &'src str {
         &self.src[self.offset..]
     }
 
+    /// Increases the known recursion depth and checks for if we overflow [`MAX_DEPTH`].
     fn descent(&mut self) -> Result<(), Error> {
         self.depth += 1;
 
@@ -80,10 +95,12 @@ impl<'src> Context<'src> {
         }
     }
 
+    /// Decreases the known recursion depth.
     fn ascent(&mut self) {
         self.depth -= 1;
     }
 
+    /// Formats an [`Error`] by getting the current offset.
     fn error<T>(&self, msg: &str) -> Result<T, Error> {
         Err(Error {
             offset: self.offset,
@@ -91,17 +108,21 @@ impl<'src> Context<'src> {
         })
     }
 
+    /// Formats an [`Error`] by getting the current offset whilst 
+    /// notifying that the error has to also be propagated up. 
     fn failing<T>(&mut self, msg: &str) -> Result<T, Error> {
         self.is_failing = true;
         self.error(msg)
     }
 
+    /// Return the next character in the stream.
     fn peek(&mut self) -> Option<char> {
         self.src().chars().next()
     }
 
+    /// Conditionally increments the stream if the first character matches `chr`.
     fn consume(&mut self, chr: char) -> Result<(), Error> {
-        match self.src().chars().next() {
+        match self.peek() {
             Some(got) if got == chr => {
                 self.offset += 1;
                 Ok(())
@@ -111,6 +132,7 @@ impl<'src> Context<'src> {
         }
     }
 
+    /// Conditionally increments the stream if the stream starts with `s`.
     fn consume_slice(&mut self, s: &str) -> Result<(), Error> {
         match self.src().get(..s.len()) {
             Some(got) if got == s => {
@@ -122,6 +144,7 @@ impl<'src> Context<'src> {
         }
     }
 
+    /// Increments the stream whilst any whitespace is encountered. 
     fn consume_whitespace(&mut self) {
         // all forms of accepted whitespace
         while let Some('\u{0020}' | '\u{000a}' | '\u{000d}' | '\u{0009}') = self.peek() {
@@ -129,6 +152,8 @@ impl<'src> Context<'src> {
         } 
     }
 
+    /// Read a string that starts and ends with '"'.
+    /// Increments stream past the string.
     fn consume_str(&mut self) -> Result<&'src str, Error> {
         self.consume('"')?;
         let start = self.offset;
@@ -138,7 +163,8 @@ impl<'src> Context<'src> {
                 break;
             }
 
-            match self.src().chars().next() {
+            match self.peek() {
+                // TODO: check character range
                 Some(..) => self.offset += 1,
                 None => return self.error("reached EOF on string"),
             }
@@ -148,6 +174,8 @@ impl<'src> Context<'src> {
         Ok(&self.src[start..self.offset])
     }
 
+    /// Reads a whole number, both negative or positive.
+    /// Increments stream past the integer.
     fn consume_int(&mut self) -> Result<isize, Error> {
         let is_neg = self.consume('-').is_ok();
         let mut int = 0isize;
@@ -189,18 +217,66 @@ impl<'src> Context<'src> {
     }
 }
 
+/// Either a root value, an [`Array`]'s item or an [`Object`]'s value.
 #[derive(Debug)]
-enum Value<'src> {
+pub enum Value<'src> {
+    /// ```text
+    /// '{' <ws> '}' | '{' {<ws> <string> <ws> ':' <ws> <value> <ws>} '}'
+    /// ```
     Object(Object<'src>),
+
+    /// ```text
+    /// '[' <ws> ']' | '{' {<ws> <value> <ws>} '}'
+    /// ```
     Array(Array<'src>),
+
+    /// ```text
+    /// '"' {'0020' . '10ffff' - '"' - '\' | <escape>} '"'
+    ///
+    /// <escape> = '"'
+    ///          | '\'
+    ///          | '/'
+    ///          | 'b'
+    ///          | 'f'
+    ///          | 'n'
+    ///          | 'r'
+    ///          | 't'
+    ///          | 'u' <hex> <hex> <hex> <hex>
+    ///
+    /// <hex> = digit
+    ///       | 'a'..'f'
+    ///       | 'A'..'F'
+    /// ```
     String(&'src str),
+
+    /// ```text
+    /// <integer> | <fraction> | <exponent>
+    ///
+    /// <integer> = ['-'] {<digit>}+
+    /// <fraction> = <integer> '.' {<digit>}+
+    /// <exponent> = <fraction> ('E' | 'e') ['+' | '-'] {<digit>}+
+    /// ```
     Number(Number),
+
+    /// ```text
+    /// "true"
+    /// ```
     True,
+
+    /// ```text
+    /// "false"
+    /// ```
     False,
+
+    /// ```text
+    /// "null"
+    /// ```
     Null,
 }
 
 impl<'src> Value<'src> {
+    /// Reads [`Value`] excluding any whitespace.
+    /// Increments stream past [`Value`].
     fn parse_inner(ctx: &mut Context<'src>) -> Result<Self, Error> {
         match Object::parse(ctx) {
             Ok(object) => return Ok(Value::Object(object)),
@@ -241,6 +317,8 @@ impl<'src> Value<'src> {
 }
 
 impl<'src> Parsing<'src> for Value<'src> {
+    /// Reads [`Value`] and whitespace.
+    /// Increments stream past [`Value`].
     fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume_whitespace();
         let this = Self::parse_inner(ctx);
@@ -249,8 +327,9 @@ impl<'src> Parsing<'src> for Value<'src> {
     }
 }
 
+/// whole integer, floating-point integer or floating-point integer in scientific notation.
 #[derive(Debug)]
-enum Number {
+pub enum Number {
     Int(isize),
     Frac { int: isize, frac: isize },
     Exp { int: isize, exp: isize },
@@ -258,6 +337,9 @@ enum Number {
 }
 
 impl Parsing<'_> for Number {
+    /// Reads either an whole integer, floating-point integer or floating-point
+    /// integer in scientific notation.
+    /// Increments stream past [`Number`].
     fn parse(ctx: &mut Context) -> Result<Self, Error> {
         let int = ctx.consume_int()?;
         let mut opt_frac = None;
@@ -311,12 +393,15 @@ impl Parsing<'_> for Number {
     }
 }
 
+/// List of (key, value) pairs.
 #[derive(Debug)]
-struct Object<'src> {
-    items: Vec<(&'src str, Value<'src>)>,
+pub struct Object<'src> {
+    pub items: Vec<(&'src str, Value<'src>)>,
 }
 
 impl<'src> Parsing<'src> for Object<'src> {
+    /// Reads a list of "key": [`Value`] pairs, starting with '{', ending with '}' and delimited
+    /// by ','. Increments stream past key's and [`Value`]'s.
     fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume('{')?;
         ctx.consume_whitespace();
@@ -356,12 +441,15 @@ impl<'src> Parsing<'src> for Object<'src> {
     }
 }
 
+/// List of values.
 #[derive(Debug)]
-struct Array<'src> {
-    items: Vec<Value<'src>>,
+pub struct Array<'src> {
+    pub items: Vec<Value<'src>>,
 }
 
 impl<'src> Parsing<'src> for Array<'src> {
+    /// Read list of values, starting with '[', ending with ']' and delimited by ','.
+    /// Increments stream past [`Value`]'s.
     fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume('[')?;
         ctx.consume_whitespace();
@@ -392,7 +480,8 @@ impl<'src> Parsing<'src> for Array<'src> {
     }
 }
 
-fn parse(src: &str) -> Result<Value, Error> {
+/// Tries to parse json [`Value`].
+pub fn parse(src: &str) -> Result<Value, Error> {
     let mut ctx = Context::new(src);
     let val = Value::parse(&mut ctx)?;
 
@@ -401,12 +490,4 @@ fn parse(src: &str) -> Result<Value, Error> {
     }
 
     Ok(val)
-}
-
-fn main() {
-    println!("{:#?}", parse(r#"{ "key": [
-        1,
-        2,
-        3
-    ] }"#));
 }
