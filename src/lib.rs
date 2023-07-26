@@ -1,8 +1,6 @@
-#![allow(dead_code)]
 ///! Crate for parsing json.
 
 use std::fmt;
-
 mod tests;
 
 const MAX_DEPTH: usize = 256;
