@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::fmt;
 
 mod tests;
@@ -17,45 +19,45 @@ impl fmt::Debug for Error {
     }
 }
 
-trait Parsing: Sized {
-    fn parse<'a>(ctx: &mut Context<'a>) -> Result<Self, Error>;
+trait Parsing<'src>: Sized {
+    fn parse(ctx: &mut Context<'src>) -> Result<Self, Error>;
 }
 
 trait Failing: Sized {
-    fn failing<'a>(self, ctx: &mut Context<'a>) -> Self;
+    fn failing(self, ctx: &mut Context) -> Self;
 }
 
 impl Failing for Error {
-    fn failing<'a>(self, ctx: &mut Context<'a>) -> Self {
+    fn failing(self, ctx: &mut Context) -> Self {
         ctx.is_failing = true;
         self
     }
 }
 
 impl<T, E> Failing for Result<T, E> {
-    fn failing<'a>(self, ctx: &mut Context<'a>) -> Self {
+    fn failing(self, ctx: &mut Context) -> Self {
         ctx.is_failing = self.is_err();
         self
     }
 }
 
 impl<T> Failing for Option<T> {
-    fn failing<'a>(self, ctx: &mut Context<'a>) -> Self {
+    fn failing(self, ctx: &mut Context) -> Self {
         ctx.is_failing = self.is_none();
         self
     }
 }
 
 #[derive(Debug)]
-struct Context<'a> {
-    src: &'a str,
+struct Context<'src> {
+    src: &'src str,
     offset: usize,
     depth: usize,
     is_failing: bool,
 }
 
-impl<'a> Context<'a> {
-    fn new(src: &'a str) -> Self {
+impl<'src> Context<'src> {
+    fn new(src: &'src str) -> Self {
         Self {
             src,
             offset: 0,
@@ -64,7 +66,7 @@ impl<'a> Context<'a> {
         }
     }
 
-    fn src(&self) -> &'a str {
+    fn src(&self) -> &'src str {
         &self.src[self.offset..]
     }
 
@@ -127,26 +129,23 @@ impl<'a> Context<'a> {
         } 
     }
 
-    fn consume_string(&mut self) -> Result<String, Error> {
+    fn consume_str(&mut self) -> Result<&'src str, Error> {
         self.consume('"')?;
+        let start = self.offset;
 
-        let mut str = String::new();
         loop {
             if let Some('"') = self.peek() {
                 break;
             }
 
             match self.src().chars().next() {
-                Some(chr) => {
-                    self.offset += 1;
-                    str.push(chr)
-                }
+                Some(..) => self.offset += 1,
                 None => return self.error("reached EOF on string"),
             }
         }
 
         self.offset += 1;
-        Ok(str)
+        Ok(&self.src[start..self.offset])
     }
 
     fn consume_int(&mut self) -> Result<isize, Error> {
@@ -191,18 +190,18 @@ impl<'a> Context<'a> {
 }
 
 #[derive(Debug)]
-enum Value {
-    Object(Object),
-    Array(Array),
-    String(String),
+enum Value<'src> {
+    Object(Object<'src>),
+    Array(Array<'src>),
+    String(&'src str),
     Number(Number),
     True,
     False,
     Null,
 }
 
-impl Value {
-    fn parse_inner<'a>(ctx: &mut Context<'a>) -> Result<Self, Error> {
+impl<'src> Value<'src> {
+    fn parse_inner(ctx: &mut Context<'src>) -> Result<Self, Error> {
         match Object::parse(ctx) {
             Ok(object) => return Ok(Value::Object(object)),
             Err(err) if ctx.is_failing => return Err(err),
@@ -221,7 +220,7 @@ impl Value {
             Err(..) => {}
         }
 
-        if let Ok(str) = ctx.consume_string() {
+        if let Ok(str) = ctx.consume_str() {
             return Ok(Value::String(str));
         }
 
@@ -241,8 +240,8 @@ impl Value {
     }
 }
 
-impl Parsing for Value {
-    fn parse<'a>(ctx: &mut Context<'a>) -> Result<Self, Error> {
+impl<'src> Parsing<'src> for Value<'src> {
+    fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume_whitespace();
         let this = Self::parse_inner(ctx);
         ctx.consume_whitespace();
@@ -258,8 +257,8 @@ enum Number {
     FracExp { int: isize, frac: isize, exp: isize },
 }
 
-impl Parsing for Number {
-    fn parse<'a>(ctx: &mut Context<'a>) -> Result<Self, Error> {
+impl Parsing<'_> for Number {
+    fn parse(ctx: &mut Context) -> Result<Self, Error> {
         let int = ctx.consume_int()?;
         let mut opt_frac = None;
 
@@ -313,12 +312,12 @@ impl Parsing for Number {
 }
 
 #[derive(Debug)]
-struct Object {
-    items: Vec<(String, Value)>,
+struct Object<'src> {
+    items: Vec<(&'src str, Value<'src>)>,
 }
 
-impl Parsing for Object {
-    fn parse<'a>(ctx: &mut Context<'a>) -> Result<Self, Error> {
+impl<'src> Parsing<'src> for Object<'src> {
+    fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume('{')?;
         ctx.consume_whitespace();
 
@@ -331,7 +330,7 @@ impl Parsing for Object {
 
         loop {
             ctx.consume_whitespace();
-            let key = ctx.consume_string().failing(ctx)?;
+            let key = ctx.consume_str().failing(ctx)?;
             ctx.consume_whitespace();
 
             ctx.consume(':').failing(ctx)?;
@@ -358,12 +357,12 @@ impl Parsing for Object {
 }
 
 #[derive(Debug)]
-struct Array {
-    items: Vec<Value>,
+struct Array<'src> {
+    items: Vec<Value<'src>>,
 }
 
-impl Parsing for Array {
-    fn parse<'a>(ctx: &mut Context<'a>) -> Result<Self, Error> {
+impl<'src> Parsing<'src> for Array<'src> {
+    fn parse(ctx: &mut Context<'src>) -> Result<Self, Error> {
         ctx.consume('[')?;
         ctx.consume_whitespace();
 
